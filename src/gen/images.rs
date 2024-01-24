@@ -7,7 +7,7 @@ use crate::{
     image_data::ImageData,
     output,
     paths,
-    static_file_data::{IMAGE_REF_NAME, VERSION_KEY},
+    static_file_data::{IMAGE_REF_NAME, IMAGE_REF_VERSION, VERSION_KEY},
 };
 
 use super::scan_data::ScanData;
@@ -76,7 +76,7 @@ fn generate_slop(data: &ImageScanData) -> Slop {
     output::divider("Converting to SLOP file...");
     
     let mut slop = Slop::new();
-    slop.insert_unchecked(VERSION_KEY.to_string(), IMAGE_REF_NAME.to_string());
+    slop.insert_unchecked(VERSION_KEY.to_string(), IMAGE_REF_VERSION.to_string());
     slop.insert_unchecked("!count".to_string(), data.joined_count().to_string());
 
     for (key, images) in &data.valid_entries {

@@ -1,6 +1,6 @@
 //! Handles the creation of a copy of a Resource Pack, optimized for publishing.
 
-use std::{collections::HashSet, error::Error, ffi::OsStr, fs, io, path::PathBuf};
+use std::{collections::HashSet, error::Error, fs, io, path::PathBuf};
 
 use slop_rs::Slop;
 use walkdir::WalkDir;
@@ -8,8 +8,8 @@ use walkdir::WalkDir;
 use crate::{
     output,
     paths::{self, EXPECT_UTF8_PATH},
-    scan::{images, loc},
-    static_file_data::{self, IMAGE_REF_NAME, IMAGE_REF_VERSION},
+    scan::{images, loc, sounds},
+    static_file_data::{self, IMAGE_REF_NAME, IMAGE_REF_VERSION, SOUND_REF_NAME},
 };
 
 macro_rules! path_vec {
@@ -35,7 +35,7 @@ pub fn build_resource_pack(orig: &PathBuf, target: &PathBuf, refs: &PathBuf)
     build_images(orig, target, refs)?;
     build_loc(orig, target)?;
     build_music(orig, target)?;
-    build_sounds(orig, target)?;
+    build_sounds(orig, target, refs)?;
 
     output::divider("Build complete");
     output::info("Consider scanning both versions of the pack");
@@ -109,12 +109,24 @@ fn build_music(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
     })
 }
 
-fn build_sounds(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
+fn build_sounds(orig: &PathBuf, target: &PathBuf, refs: &PathBuf) -> Result<(), Box<dyn Error>> {
     output::announce("Building", "/Content/Sounds");
     let orig = paths::push(orig, "Content/Sounds");
     let target = paths::push(target, "Content/Sounds");
 
-    copy_files_if(&orig, &target, true, |p| Some(OsStr::new("xnb")) == p.extension())
+    let slop = Slop::open(paths::push(refs, SOUND_REF_NAME))?;
+    let data = sounds::slop_into_sound_data(slop);
+
+    copy_files_if(&orig, &target, true, |p| {
+        let path = paths::push(&orig, p);
+        let result =
+            sounds::validate_sound(path, PathBuf::new(), &orig, &data);
+
+        match result {
+            Ok(s) => s.is_valid(),
+            Err(_) => false,
+        }
+    })
 }
 
 fn copy_files_if<F>(from: &PathBuf, to: &PathBuf, recursive: bool, should_copy: F)

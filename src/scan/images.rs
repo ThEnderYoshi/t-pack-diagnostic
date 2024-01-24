@@ -40,7 +40,7 @@ pub fn scan_images(images_dir: &PathBuf, ref_dir: &PathBuf) -> Result<(), Box<dy
     let data = slop_into_image_data(slop);
 
     println!();
-    output::announce_path("Scanning ", images_dir);
+    output::announce_path("Scanning", images_dir);
 
     scanner.scan(
         WalkDir::new(images_dir).into_iter(),

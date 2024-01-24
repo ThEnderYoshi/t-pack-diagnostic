@@ -15,7 +15,8 @@ of date and you will need to run them again.
 | File           | Version | Changed In |
 |:--------------:|:-------:|:----------:|
 | `images.slop`  | `1`     | `2.0.0`    |
-| `loc_keys.txt` | *N/A*   | *N/A*      |
+| `sounds.slop`  | `0`     | `2.0.0`    |
+| `loc_keys.txt` | *N/A*   | `1.0.0`    |
 
 ## Usage
 
