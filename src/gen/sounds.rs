@@ -42,7 +42,7 @@ impl Display for InvalidSound {
     }
 }
 
-pub fn generate_sound_refs(sound_dir: &PathBuf, refs: &PathBuf) -> io::Result<()> {
+pub fn generate_sound_ref(sound_dir: &PathBuf, refs: &PathBuf) -> io::Result<()> {
     output::divider("Generating sound reference...");
 
     let mut scan_data = ScanData::new("sounds");

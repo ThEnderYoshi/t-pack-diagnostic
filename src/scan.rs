@@ -6,6 +6,7 @@ use crate::{output, paths};
 
 pub mod images;
 pub mod loc;
+pub mod music;
 pub mod sounds;
 
 const MSG_BAD_REF_DIR: &str = "expected `-r` to be the dir with the reference files";
@@ -27,6 +28,12 @@ pub fn scan_resource_pack(root_dir: &PathBuf, ref_dir: &PathBuf) -> Result<(), B
 
     if loc_dir.is_dir() {
         loc::scan_localization_files(&loc_dir, ref_dir)?;
+    }
+
+    let music_dir = paths::push(root_dir, "Content/Music/");
+
+    if music_dir.is_dir() {
+        music::scan_music(&music_dir, ref_dir)?;
     }
 
     let sounds_dir = paths::push(root_dir, "Content/Sounds/");

@@ -9,6 +9,7 @@ previous user inputs.
 
 This version includes a total rewrite of the codebase and improvements to
 all commands.
+In addition, music and sound effects can now be scanned.
 
 ### Breaking Changes
 
@@ -16,8 +17,10 @@ all commands.
   - The program will now **panic** if this keyvalue is not present or holds the
     wrong number.
   - The current `images.slop` version is now `1`.
-- `build` now needs the `sounds.slop` reference file to compare sound files and
-  will **panic** otherwise.
+- `scan` and `build` now need the `music.txt` reference file to compare music
+  files and will **panic** otherwise.
+- `scan` and `build` now need the `sounds.slop` reference file to compare sound
+  files and will **panic** otherwise.
 
 #### Migrating From `1.0.0` to `2.0.0`
 
@@ -25,8 +28,10 @@ Simply run the `gen` command again in version [2.0.0].
 
 ### Added
 
+- `gen` now generates music reference files.
 - `gen` now generates sound reference files.
 - `scan` now compares image sizes in addition to file names.
+- `scan` now compares music files.
 - `scan` now compares sound files.
 
 ## Version 1.0.0 - 2023-08-08

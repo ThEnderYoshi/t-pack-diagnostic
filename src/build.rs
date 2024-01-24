@@ -8,8 +8,8 @@ use walkdir::WalkDir;
 use crate::{
     output,
     paths::{self, EXPECT_UTF8_PATH},
-    scan::{images, loc, sounds},
-    static_file_data::{self, IMAGE_REF_NAME, IMAGE_REF_VERSION, SOUND_REF_NAME},
+    scan::{images, loc, music, sounds},
+    static_file_data::{self, IMAGE_REF_NAME, IMAGE_REF_VERSION, MUSIC_REF_NAME, SOUND_REF_NAME},
 };
 
 macro_rules! path_vec {
@@ -34,7 +34,7 @@ pub fn build_resource_pack(orig: &PathBuf, target: &PathBuf, refs: &PathBuf)
     build_root(orig, target)?;
     build_images(orig, target, refs)?;
     build_loc(orig, target)?;
-    build_music(orig, target)?;
+    build_music(orig, target, refs)?;
     build_sounds(orig, target, refs)?;
 
     output::divider("Build complete");
@@ -96,16 +96,18 @@ fn build_loc(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
     })
 }
 
-fn build_music(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
-    let extensions: HashSet<&str> = HashSet::from(["mp3", "ogg", "wav"]);
+fn build_music(orig: &PathBuf, target: &PathBuf, refs: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let refs = music::open_music_ref(paths::push(refs, MUSIC_REF_NAME))?;
 
     output::announce("Building", "/Content/Music");
     let orig = paths::push(orig, "Content/Music");
     let target = paths::push(target, "Content/Music");
 
     copy_files_if(&orig, &target, false, |p| {
-        let extension = paths::extension(p);
-        extensions.contains(extension)
+        match music::validate_song(p.clone(), &refs) {
+            Ok(s) => s.is_valid(),
+            Err(_) => false,
+        }
     })
 }
 

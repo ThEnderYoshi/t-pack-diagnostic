@@ -6,6 +6,7 @@ use crate::{output, paths, static_file_data::ALL_LOC_CSV_NAME};
 
 mod images;
 mod loc;
+mod music;
 mod scan_data;
 mod sounds;
 
@@ -25,10 +26,12 @@ pub fn generate_references(extracted: &PathBuf, refs: &PathBuf) -> Result<(), Bo
         loc::generate_loc_ref(&loc_file, refs)?;
     }
 
+    music::generate_music_ref(extracted, refs)?;
+
     let sound_dir = paths::push(extracted, "Sounds");
 
     if sound_dir.is_dir() {
-        sounds::generate_sound_refs(&sound_dir, refs)?;
+        sounds::generate_sound_ref(&sound_dir, refs)?;
     }
 
     Ok(())
