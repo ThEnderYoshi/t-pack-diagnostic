@@ -21,6 +21,11 @@ pub const ALL_LOC_CSV_NAME: &str = "Loc.csv";
 /// The file name of the text file with only the translation keys.
 pub const LOC_REF_NAME: &str = "loc_keys.txt";
 
+/// The file name of the sound reference file.
+pub const SOUND_REF_NAME: &str = "sounds.slop";
+
+pub const SOUND_REF_VERSION: Version = 0;
+
 /// The maximum amount of items that can be displayed by lists.
 pub const MAX_LIST_SIZE: usize = 100;
 

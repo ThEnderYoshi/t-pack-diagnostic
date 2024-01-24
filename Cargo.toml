@@ -2,6 +2,7 @@
 name = "t_pack_diagnostic"
 version = "2.0.0"
 description = "Diagnostic tool for Terraria Resource Packs"
+license = "MIT"
 authors = ["ThEnderYoshi"]
 edition = "2021"
 

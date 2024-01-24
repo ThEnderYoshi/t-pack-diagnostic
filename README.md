@@ -6,6 +6,17 @@ Note that this is largely intended for overhaul packs.
 Smaller Resource Packs don't really need external tools to keep things
 manageable.
 
+## Current Reference File Versions
+
+Look for a `!version=` in these files.
+If the versions do not match the numbers in the table below, the files are out
+of date and you will need to run them again.
+
+| File           | Version | Changed In |
+|:--------------:|:-------:|:----------:|
+| `images.slop`  | `1`     | `2.0.0`    |
+| `loc_keys.txt` | *N/A*   | *N/A*      |
+
 ## Usage
 
 Syntax:
