@@ -1,34 +1,83 @@
-//! Handles the localization of the `scan` action.
-
-use std::{path::PathBuf, error::Error, fs, cmp::Ordering, io::{self, Write}};
+use std::{cmp::Ordering, collections::HashSet, error::Error, fmt::Display, fs, path::PathBuf};
 
 use lazy_static::lazy_static;
 use regex::Regex;
 use walkdir::WalkDir;
 
 use crate::{
-    input,
     output::{self, DASH, RED_DASH},
+    paths,
+    scanner::{ItemStatus, Scanner},
+    static_file_data::LOC_REF_NAME,
 };
 
-use super::{ValidatorCrawler, ItemValidation};
+use super::MSG_BAD_REF_DIR;
 
 lazy_static! {
-    /// `0`: Entire match, `1`: Locale tag, `2`: File extension
+    /// ## Captures
+    ///
+    /// - `1`: Locale tag
+    /// - `2`: File extension
     pub static ref RE_LOC_FILE_NAME: Regex = Regex::new(
         r"^(en-US|de-DE|it-IT|fr-FR|es-ES|ru-RU|zh-Hans|pt-BR|pl-PL)-.*\.(csv|json)$",
     ).unwrap();
 }
 
-pub fn crawl_localization(loc_dir: &PathBuf, ref_dir: &PathBuf) -> Result<(), Box<dyn Error>> {
-    let reference: Vec<String> = fs::read_to_string(input::child_path(ref_dir, "loc_keys.txt"))
-    .expect("expected `-r` to have the file `loc_keys.txt`")
-    .split('\n')
-        .map(|i| String::from(i))
+/// The possible types of localization files.
+enum LocFileType {
+    Csv,
+    Json,
+}
+
+impl LocFileType {
+    /// Returns the [LocFileType] of the file name, or [None] if the type
+    /// is invalid.
+    fn from_file_name(file_name: &str) -> Option<Self> {
+        //TODO: Handle different locales.
+
+        let caps = RE_LOC_FILE_NAME.captures(file_name)?;
+
+        match &caps[2] {
+            "csv" => Some(Self::Csv),
+            "json" => Some(Self::Json),
+            _ => None,
+        }
+    }
+}
+
+enum InvalidEntry {
+    /// Returned if an empty record was found.
+    /// Holds the file name.
+    EmptyRecord(String),
+
+    /// Returned if the key was not found in the reference file.
+    /// Holds the file name and the key itself.
+    BadKey(String, String),
+}
+
+impl Display for InvalidEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyRecord(p) => {
+                write!(f, "{p}\t: Empty record.")
+            }
+            Self::BadKey(p, k) => write!(
+                f,
+                "{p}\t: The key `{k}` was not found in the reference file.",
+            ),
+        }
+    }
+}
+
+pub fn scan_localization_files(loc_dir: &PathBuf, ref_dir: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let reference: HashSet<String> = fs::read_to_string(paths::push(ref_dir, LOC_REF_NAME))
+        .expect(MSG_BAD_REF_DIR)
+        .lines()
+        .map(|l| l.to_string())
         .collect();
 
-    let mut crawler = ValidatorCrawler::new(reference.len() as u32);
-    let mut invalid_files: Vec<String> = vec![];
+    let mut scanner = Scanner::new("entries");
+    let mut invalid_file_names = vec![];
 
     println!();
     output::announce_path("Scanning", loc_dir);
@@ -40,90 +89,68 @@ pub fn crawl_localization(loc_dir: &PathBuf, ref_dir: &PathBuf) -> Result<(), Bo
         if path.is_dir() {
             continue;
         }
-        if let Some(file_name) = path.file_name() {
-            let file_name = file_name.to_str()
-                .expect(input::EXPECT_UTF8_PATH);
 
-            match get_loc_file_type(file_name) {
-                LocFileType::Invalid => {
-                    invalid_files.push(String::from(file_name));
-                    continue;
+        let file_name = paths::file_name(&path);
+
+        match LocFileType::from_file_name(file_name) {
+            None => {
+                invalid_file_names.push(file_name.to_string());
+                continue;
+            }
+            Some(LocFileType::Csv) => scanner.scan(
+                csv::Reader::from_path(path.clone())?.records(),
+                |r| {
+                    let record = match r {
+                        Ok(r) => r,
+                        Err(e) => panic!("{e}"),
+                    };
+
+                    if let Some(key) = record.get(0) {
+                        Ok(validate_entry(file_name, key, &reference))
+                    } else {
+                        Ok(ItemStatus::Invalid(InvalidEntry::EmptyRecord(file_name.to_string())))
+                    }
                 },
-                LocFileType::Csv => crawler.crawl(
-                    &mut csv::Reader::from_path(path.clone())?.records(),
-                    |f| {
-                        let record = match f {
-                            Ok(record) => record,
-                            Err(e) => panic!("{e}"),
-                        };
-                        Ok(if let Some(key) = record.get(0) {
-                            validate_entry(file_name, key, &reference)
-                        } else {
-                            ItemValidation::Invalid(format!("{file_name}:\t<empty record>"))
-                        })
-                    },
-                )?,
-                LocFileType::Json => {
-                    io::stdout().flush()?;
-                    println!();
-                    output::warn("JSON files aren't supported yet.");
-                }
+            )?,
+            Some(LocFileType::Json) => {
+                println!();
+                output::warn("JSON translation files are not supported yet.")
             }
         }
     }
 
-    io::stdout().flush()?;
     println!();
-    output::divider("Crawl comlpete.");
+    output::divider("Scan complete.");
 
-    crawler.report_findings();
-    report_invalid_files(&invalid_files);
-
+    scanner.print_results(reference.len() as u32);
+    print_invalid_files(&invalid_file_names);
     Ok(())
 }
 
-enum LocFileType {
-    Invalid,
-    Csv,
-    Json,
-}
-
-fn get_loc_file_type(file_name: &str) -> LocFileType {
-    if let Some(caps) = RE_LOC_FILE_NAME.captures(file_name) {
-        if &caps[2] == "csv" {
-            LocFileType::Csv
-        } else {
-            LocFileType::Json
-        }
-    } else {
-        LocFileType::Invalid
-    }
-}
-
-fn validate_entry(file_name: &str, key: &str, reference: &Vec<String>) -> ItemValidation {
-    let key = String::from(key);
-
-    if reference.iter().any(|i| i == &key) {
-        ItemValidation::Valid
+fn validate_entry(file_name: &str, key: &str, reference: &HashSet<String>)
+    -> ItemStatus<InvalidEntry>
+{
+    if reference.contains(key) {
+        ItemStatus::Valid
     } else if key.chars().next() == Some('#') {
-        ItemValidation::Ignored
+        ItemStatus::Ignored
     } else {
-        ItemValidation::Invalid(format!("{file_name}:\t{key}"))
+        ItemStatus::Invalid(InvalidEntry::BadKey(file_name.to_string(), key.to_string()))
     }
 }
 
-fn report_invalid_files(files: &Vec<String>) {
-    let count = files.len();
+fn print_invalid_files(file_names: &Vec<String>) {
+    let count = file_names.len();
     let dash = if count == 0 { DASH.to_string() } else { RED_DASH.to_string() };
 
     match count.cmp(&1) {
         Ordering::Less => {
             println!("{dash} No invalid files found!");
             return;
-        },
+        }
         Ordering::Equal => println!("{dash} This file has an invalid name and was skipped:"),
         Ordering::Greater => println!("{dash} These files have invalid names and were skipped:"),
     }
 
-    output::bullet_list(format!("  {dash}"), &mut files.iter());
+    output::bullet_list(format!("  {dash}"), file_names.iter());
 }

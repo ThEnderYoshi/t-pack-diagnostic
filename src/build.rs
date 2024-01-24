@@ -1,155 +1,146 @@
-//! Handles the `build` action.
+//! Handles the creation of a copy of a Resource Pack, optimized for publishing.
 
-use std::{path::PathBuf, error::Error, io, fs, ffi::OsStr};
+use std::{collections::HashSet, error::Error, ffi::OsStr, fs, io, path::PathBuf};
 
+use slop_rs::Slop;
 use walkdir::WalkDir;
 
-use crate::{output, input, slop::Slop, scan};
-
-pub fn build_resource_pack(
-    orig_root: &PathBuf,
-    copy_root: &PathBuf,
-    refs: &PathBuf,
-) -> Result<(), Box<dyn Error>> {
-    output::info("ACTION - Build Resource Pack");
-
-    if !orig_root.is_dir() {
-        panic!("expected `-i` to point to an existing dir");
-    }
-
-    prepare_copy_dir(&copy_root)?;
-    copy_root_dir(orig_root, copy_root)?;
-    copy_images_dir(orig_root, copy_root, refs)?;
-    copy_loc_dir(orig_root, copy_root)?;
-    copy_music_dir(orig_root, copy_root)?;
-    copy_sounds_dir(orig_root, copy_root)?;
-
-    output::divider("Build complete.");
-    println!("Consider scanning both versions of the pack to\
-        ensure everything was copied properly.");
-
-    Ok(())
-}
+use crate::{
+    output,
+    paths::{self, EXPECT_UTF8_PATH},
+    scan::{images, loc},
+    static_file_data::{self, IMAGE_REF_NAME, IMAGE_REF_VERSION},
+};
 
 macro_rules! path_vec {
     () => {
         Vec::<PathBuf>::new()
     };
-    ($($path_str:expr),*) => {
+    ($($strs:expr),*) => {
         vec![$(PathBuf::from($path_str)),*]
     };
 }
 
-fn prepare_copy_dir(copy_root: &PathBuf) -> io::Result<()> {
-    output::divider("Preparing output directory...");
-    fs::create_dir_all(copy_root)
-}
+pub fn build_resource_pack(orig: &PathBuf, target: &PathBuf, refs: &PathBuf)
+    -> Result<(), Box<dyn Error>>
+{
+    output::info("ACTION - Build Resource Pack");
 
-fn copy_root_dir(orig_root: &PathBuf, copy_root: &PathBuf) -> Result<(), Box<dyn Error>> {
-    output::announce("Copying", "/");
-
-    if input::child_path(orig_root, "workshop.json").is_file() {
-        output::warn("workshop.json detected.\n      \
-            Remember to copy-paste it to the result dir.");
+    if !orig.is_dir() {
+        panic!("expected `-i` to point to an existing dir");
     }
 
-    let root_files = path_vec!["icon.png", "pack.json"];
-    copy_files_if(
-        &orig_root,
-        &copy_root,
-        false,
-        |p| root_files.iter().any(|i| i == p),
-    )
+    prepare_target(&target)?;
+    build_root(orig, target)?;
+    build_images(orig, target, refs)?;
+    build_loc(orig, target)?;
+    build_music(orig, target)?;
+    build_sounds(orig, target)?;
+
+    output::divider("Build complete");
+    output::info("Consider scanning both versions of the pack");
+    output::info("to ensure everything was copied properly.");
+
+    Ok(())
 }
 
-fn copy_images_dir(
-    orig_root: &PathBuf,
-    copy_root: &PathBuf,
-    refs: &PathBuf,
-) -> Result<(), Box<dyn Error>> {
-    output::announce("Copying", "/Content/Images");
-
-    let slop = Slop::from_file(input::child_path(refs, "images.slop"))?;
-    let orig_images = input::child_path(orig_root, "Content/Images");
-    let copy_images = input::child_path(copy_root, "Content/Images");
-
-    copy_files_if(
-        &orig_images,
-        &copy_images,
-        true,
-        |p| {
-            let path = input::child_path(&orig_images, p);
-            scan::images::is_item_valid(&path, &orig_images, &slop)
-        },
-    )
+fn prepare_target(target: &PathBuf) -> io::Result<()> {
+    output::divider("Preparing output directory...");
+    fs::create_dir_all(target)
 }
 
-fn copy_loc_dir(
-    orig_root: &PathBuf,
-    copy_root: &PathBuf,
-) -> Result<(), Box<dyn Error>> {
-    output::announce("Copying", "/Content/Localization");
-    let orig_loc = input::child_path(orig_root, "Content/Localization");
-    let copy_loc = input::child_path(copy_root, "Content/Localization");
+fn build_root(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
+    output::announce("Building", "/");
 
-    copy_files_if(
-        &orig_loc,
-        &copy_loc,
-        false,
-        |p| if let Some(path) = p.to_str() {
-            scan::loc::RE_LOC_FILE_NAME.is_match(path)
-        } else {
-            false
-        },
-    )
+    if paths::push(orig, "workshop.json").is_file() {
+        output::warn("`workshop.json` detected.");
+        output::warn("Remember to copy it into the new version.");
+    }
+
+    let root_files: HashSet<PathBuf> = HashSet::from(["icon.png".into(), "pack.json".into()]);
+    copy_files_if(&orig, &target, false, |p| root_files.contains(p))
 }
 
-fn copy_music_dir(orig_root: &PathBuf, copy_root: &PathBuf) -> Result<(), Box<dyn Error>> {
-    const EXTENSIONS: [&str; 3] = ["mp3", "ogg", "wav"];
-    output::announce("Copying", "/Content/Music");
-    let orig_music = input::child_path(orig_root, "Content/Music");
-    let copy_music = input::child_path(copy_root, "Content/Music");
+fn build_images(orig: &PathBuf, target: &PathBuf, refs: &PathBuf) -> Result<(), Box<dyn Error>> {
+    output::announce("Building", "/Content/Images");
 
-    copy_files_if(
-        &orig_music,
-        &copy_music,
-        false,
-        |p| EXTENSIONS.iter().any(|e| Some(OsStr::new(e)) == p.extension()),
-    )
+    let slop = Slop::open(paths::push(refs, IMAGE_REF_NAME))?;
+    static_file_data::validate_slop(&slop, IMAGE_REF_VERSION);
+    let data = images::slop_into_image_data(slop);
+
+    let orig = paths::push(orig, "Content/Images");
+    let target = paths::push(target, "Content/Images");
+
+    copy_files_if(&orig, &target, true, |p| {
+        let path = paths::push(&orig, p);
+        let result =
+            images::validate_image(path, PathBuf::new(), &orig, &data);
+        
+        if result.is_err() {
+            return false;
+        }
+
+        result.unwrap().is_valid()
+    })
 }
 
-fn copy_sounds_dir(orig_root: &PathBuf, copy_root: &PathBuf) -> Result<(), Box<dyn Error>> {
-    output::announce("Copying", "/Content/Sounds");
-    let orig_sounds = input::child_path(orig_root, "Content/Sounds");
-    let copy_sounds = input::child_path(copy_root, "Content/Sounds");
+fn build_loc(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
+    output::announce("Building", "/Content/Localization");
+    let orig = paths::push(orig, "Content/Localization");
+    let target = paths::push(target, "Content/Localization");
 
-    copy_files_if(
-        &orig_sounds,
-        &copy_sounds,
-        false,
-        |p| Some(OsStr::new("xnb")) == p.extension(),
-    )
+    copy_files_if(&orig, &target, false, |p| if let Some(path) = p.to_str() {
+        loc::RE_LOC_FILE_NAME.is_match(path)
+    } else {
+        false
+    })
 }
 
-fn copy_files_if<F>(
-    from: &PathBuf,
-    to: &PathBuf,
-    is_recursive: bool,
-    should_copy: F,
-) -> Result<(), Box<dyn Error>>
+fn build_music(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let extensions: HashSet<&str> = HashSet::from(["mp3", "ogg", "wav"]);
+
+    output::announce("Building", "/Content/Music");
+    let orig = paths::push(orig, "Content/Music");
+    let target = paths::push(target, "Content/Music");
+
+    copy_files_if(&orig, &target, false, |p| {
+        let extension = paths::extension(p);
+        extensions.contains(extension)
+    })
+}
+
+fn build_sounds(orig: &PathBuf, target: &PathBuf) -> Result<(), Box<dyn Error>> {
+    output::announce("Building", "/Content/Sounds");
+    let orig = paths::push(orig, "Content/Sounds");
+    let target = paths::push(target, "Content/Sounds");
+
+    copy_files_if(&orig, &target, true, |p| Some(OsStr::new("xnb")) == p.extension())
+}
+
+fn copy_files_if<F>(from: &PathBuf, to: &PathBuf, recursive: bool, should_copy: F)
+    -> Result<(), Box<dyn Error>>
 where
-    F: for <'a> Fn(&'a PathBuf) -> bool,
+    F: for<'a> Fn(&'a PathBuf) -> bool,
 {
-    let mut valid_files = path_vec![];
-    let walk_dir = if is_recursive {
+    let walk_dir = if recursive {
         WalkDir::new(from)
     } else {
         WalkDir::new(from).max_depth(1)
     };
 
+    let mut valid_files = path_vec![];
+
     for entry in walk_dir {
         let entry = entry?;
         let path = entry.path().strip_prefix(from)?.to_path_buf();
+
+        if path.is_dir() {
+            continue;
+        }
+
+        if path.to_str().expect(EXPECT_UTF8_PATH).is_empty() {
+            continue;
+        }
 
         if should_copy(&path) {
             valid_files.push(path);
@@ -157,20 +148,23 @@ where
     }
 
     if valid_files.is_empty() {
-        println!("No files in {from:?}!");
-    } else {
-        fs::create_dir_all(to)?;
-        for path in valid_files {
-            let orig = input::child_path(from, &path);
-            let copy = input::child_path(to, &path);
+        output::info(&format!("No files in `{from:?}`."));
+        return Ok(());
+    }
 
-            if let Some(path) = copy.parent() {
-                if !path.is_dir() {
-                    fs::create_dir_all(path)?;
-                }
+    fs::create_dir_all(to)?;
+
+    for path in valid_files {
+        let orig = paths::push(from, &path);
+        let target = paths::push(to, &path);
+
+        if let Some(dir) = target.parent() {
+            if !dir.is_dir() {
+                fs::create_dir_all(dir)?;
             }
-            fs::copy(orig, copy)?;
         }
+
+        fs::copy(orig, target)?;
     }
 
     Ok(())

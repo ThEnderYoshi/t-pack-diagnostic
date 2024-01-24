@@ -1,83 +1,143 @@
-//! The part of `scan` that scans images.
+use std::{collections::HashMap, error::Error, ffi::OsString, path::PathBuf};
 
-use std::{path::PathBuf, error::Error, ffi::OsString, io::{self, Write}};
-
+use lazy_static::lazy_static;
+use slop_rs::Slop;
 use walkdir::{WalkDir, DirEntry};
 
-use crate::{slop::Slop, input, slopx, output};
+use crate::{
+    image_data::{ImageData, InvalidImage},
+    output,
+    paths,
+    scanner::{Scanner, ItemStatus},
+    static_file_data::{self, IMAGE_REF_NAME, IMAGE_REF_VERSION},
+};
 
-use super::{ValidatorCrawler, ItemValidation};
+use super::MSG_BAD_REF_DIR;
 
-pub fn crawl_images(images_dir: &PathBuf, reference_dir: &PathBuf) -> Result<(), Box<dyn Error>> {
-    let reference = Slop::from_file(input::child_path(reference_dir, "images.slop"))
-        .expect("expected `-r` to have a file called `images.slop`");
+lazy_static! {
+    static ref DESKTOP_INI: OsString = OsString::from("desktop.ini");
+}
 
-    let mut crawler = ValidatorCrawler::new(slopx::parse_string(&reference, "!count")
-        .expect("expected `images.slop` to have a `!count` KV"));
+/// Shorthand for the data taken from the `images.slop` file.
+pub type DataMap = HashMap<String, Vec<ImageData>>;
+
+/// Scans through images in the `<pack>/Content/Images/` directory and prints
+/// its findings.
+pub fn scan_images(images_dir: &PathBuf, ref_dir: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let slop = Slop::open(paths::push(ref_dir, IMAGE_REF_NAME))
+        .expect(MSG_BAD_REF_DIR);
+
+    static_file_data::validate_slop(&slop, IMAGE_REF_VERSION);
+
+    let extracted_count: u32 = slop
+        .get("!count")
+        .expect("expected `images.slop` to have a `!count` keyvalue")
+        .parse_into()
+        .expect("expected `!count` kv be a string")
+        .expect("expected `!count` kv to parse into an unsigned 32 bit integer");
+
+    let mut scanner = Scanner::new("images");
+    let data = slop_into_image_data(slop);
 
     println!();
-    output::announce_path("Scanning", images_dir);
-    crawler.crawl(
-        &mut WalkDir::new(images_dir).into_iter(),
-        |f| validate_item(f, images_dir, &reference),
+    output::announce_path("Scanning ", images_dir);
+
+    scanner.scan(
+        WalkDir::new(images_dir).into_iter(),
+        |f| validate_entry(f, images_dir, &data),
     )?;
 
-    io::stdout().flush()?;
     println!();
-    output::divider("Crawl comlpete.");
-
-    crawler.report_findings();
+    output::divider("Scan complete.");
+    scanner.print_results(extracted_count);
     Ok(())
 }
 
-pub fn is_item_valid(path: &PathBuf, images_dir: &PathBuf, reference: &Slop) -> bool {
-    if let Some(extension) = path.extension() {
-        if extension.to_str() != Some("png") {
-            false
-        } else {
-            let path = path.strip_prefix(images_dir)
-                .expect("Expected path to be a child of `content_dir`")
-                .to_path_buf();
-            is_item_in_reference(&path, reference)
+/// Converts the slop into an equivalent [HashMap] that holds [ImageData] items.
+pub fn slop_into_image_data(slop: Slop) -> DataMap {
+    let mut data = HashMap::new();
+
+    for (key, value) in slop {
+        if key.starts_with('!') {
+            continue;
         }
-    } else {
-        false
+
+        let values = value.list().expect("expected a list kv");
+        let values = values.iter().map(
+            |f| f.parse().expect("expected a valid image data string"),
+        );
+
+        data.insert(key, values.collect());
     }
+
+    data
 }
 
-fn validate_item(
-    f: &walkdir::Result<DirEntry>,
-    images_dir: &PathBuf,
-    reference: &Slop,
-) -> Result<ItemValidation, Box<dyn Error>> {
+fn validate_entry(f: &walkdir::Result<DirEntry>, images_dir: &PathBuf, data: &DataMap)
+    -> Result<ItemStatus<InvalidImage>, Box<dyn Error>>
+{
+    //HACK: Rust doesn't like it if I use anything other than match here.
     let entry = match f {
-        Ok(entry) => entry,
-        Err(err) => panic!("{err}"), //HACK: Yeeeeah you knowwwww
+        Ok(e) => e,
+        Err(e) => panic!("{e}"),
     };
+
     let path = entry.path().to_path_buf();
 
-    if path.is_dir() || path.file_name() == Some(&OsString::from("desktop.ini")) {
-        Ok(ItemValidation::Ignored)
-    } else if is_item_valid(&path, images_dir, reference) {
-        Ok(ItemValidation::Valid)
-    } else {
-        Ok(ItemValidation::Invalid(String::from(path.to_str().expect(input::EXPECT_UTF8_PATH))))
+    // First we need to make sure the entry is an image in the first place.
+
+    if path.is_dir() || path.file_name() == Some(&DESKTOP_INI) {
+        return Ok(ItemStatus::Ignored);
     }
+
+    let relative_path = path
+        .strip_prefix(images_dir)
+        .expect("expected path to be a child of `Images/`")
+        .to_path_buf();
+
+    let extension = match path.extension() {
+        Some(e) => e,
+        None => return Ok(ItemStatus::Invalid(InvalidImage::BadName(relative_path))),
+    };
+
+    if extension.to_str() != Some("png") {
+        return Ok(ItemStatus::Invalid(InvalidImage::BadName(relative_path)));
+    }
+
+    // Now that we know the entry is an image, let's properly validate it.
+    validate_image(path, relative_path, images_dir, data)
 }
 
-fn is_item_in_reference(path: &PathBuf, reference: &Slop) -> bool {
-    let dir = path.parent()
-        .expect("Expected file to have a parent")
+pub fn validate_image(path: PathBuf, relative_path: PathBuf, images_dir: &PathBuf, data: &DataMap)
+    -> Result<ItemStatus<InvalidImage>, Box<dyn Error>>
+{
+    let dir = path
+        .parent()
+        .expect("expected path to have a parent")
         .to_path_buf();
-    let dir = &input::path_buf_to_key_name(&dir);
-    let path = path.file_name()
-        .expect("Expected path to not end in a root.")
-        .to_str()
-        .expect(input::EXPECT_UTF8_PATH);
 
-    if let Some(list) = reference.get_list(&dir) {
-        list.iter().any(|i| i == path)
-    } else {
-        false
+    let dir_key = dir
+        .strip_prefix(images_dir)
+        .expect("expected path to be a child of `Images/`")
+        .to_path_buf();
+
+    let dir_key = paths::path_buf_to_key_name(&dir_key);
+    let file_name = paths::file_name(&path);
+
+    let data = match data.get(&dir_key) {
+        Some(d) => d,
+        None => return Ok(ItemStatus::Invalid(InvalidImage::BadName(relative_path))),
+    };
+
+    for data in data {
+        match data.validate_image(&dir, file_name) {
+            Ok(_) => return Ok(ItemStatus::Valid),
+            Err(InvalidImage::BadName(_)) => continue,
+            Err(InvalidImage::BadSize(_, b_size, g_size)) => {
+                return Ok(ItemStatus::Invalid(InvalidImage::BadSize(relative_path, b_size, g_size)))
+            }
+        }
     }
+
+    Ok(ItemStatus::Invalid(InvalidImage::BadName(relative_path)))
 }

@@ -1,141 +1,180 @@
-//! Handles the `gen` action.
+//! Handles the generation of the reference files.
 
-use std::{
-    path::{PathBuf, Path},
-    io::{self, Write},
-    collections::HashMap, fs, error::Error,
-};
+use std::{path::PathBuf, fmt::Display, io, fs, error::Error};
 
 use csv::Reader;
+use slop_rs::Slop;
 use walkdir::WalkDir;
 
 use crate::{
     output,
-    slop::{SlopValue, Slop},
-    input,
+    paths,
+    image_data::ImageData,
+    static_file_data::{
+        IMAGE_REF_NAME,
+        IMAGE_REF_VERSION,
+        ALL_LOC_CSV_NAME,
+        LOC_REF_NAME, VERSION_KEY,
+    },
 };
 
-const IMAGES_SLOP_FILE_NAME: &str = "images.slop";
-const LOC_KEYS_FILE_NAME: &str = "loc_keys.txt";
+use self::scan_data::ScanData;
 
-pub fn generate_references(extracted_files: &PathBuf, generated_refs: &PathBuf) -> io::Result<()> {
+mod scan_data;
+
+pub enum InvalidEntry {
+    InvalidImage(PathBuf),
+}
+
+impl Display for InvalidEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidImage(path) =>
+                write!(f, "Couldn't read as image: {}", path.display()),
+        }
+    }
+}
+
+pub fn generate_references(extracted_files: &PathBuf, output: &PathBuf) -> io::Result<()> {
     output::info("ACTION - Generate References");
-    let mut extracted_images = extracted_files.clone();
-    extracted_images.push("Images");
 
-    if !extracted_images.is_dir() {
-        println!("{extracted_files:?}");
-        panic!("`-i` must point to a valid directory with an `/Images` dir");
-    }
-    if !generated_refs.is_dir() {
-        panic!("`-o` must point to a valid directory");
+    let image_dir = paths::push(extracted_files, "Images");
+
+    if !image_dir.is_dir() {
+        panic!("`-i` must point to a valid dir with `Images/`");
     }
 
-    let mut image_paths: HashMap<String, SlopValue> = HashMap::new();
-    let mut image_count: u32 = 0;
+    if !output.is_dir() {
+        panic!("`-o` must point to a valid dir");
+    }
 
-    output::announce_path("Crawling through", &extracted_images);
+    let mut scan_data = ScanData::new();
+    output::announce_path("Scanning", &image_dir);
 
-    for entry in WalkDir::new(extracted_images.clone()) {
+    let mut stdout = io::stdout().lock();
+
+    for entry in WalkDir::new(image_dir.clone()) {
         let entry = entry?;
         let path = entry.path();
-        let path_dir = path.to_path_buf();
+        let file_path = path.to_path_buf();
 
-        if path_dir.is_dir() {
+        if file_path.is_dir() {
             continue;
         }
 
-        let file_name = input::file_name(&path_dir);
-        let path_dir = input::sanitize_path(&mut path_dir.clone(), &extracted_images);
-        let path_dir = input::path_buf_to_key_name(&path_dir);
-        register_item(&mut image_paths, &path_dir, file_name);
+        let sanitized_parent = paths::sanitize_path(file_path.clone(), &image_dir);
+        register_item(&mut scan_data, &sanitized_parent, &file_path);
 
-        image_count += 1;
-        if image_count % 100 == 0 {
-            output::update_progress("images", image_count)?;
+        let joined_count = scan_data.joined_count();
+
+        if joined_count % 100 == 0 {
+            output::update_progress(&mut stdout, "images", joined_count)?;
         }
     }
 
-    output::update_progress("images", image_count)?;
-    io::stdout().flush()?;
-    if image_count > 10000 {
+    let joined_count = scan_data.joined_count();
+    output::update_progress(&mut stdout, "images", joined_count)?;
+
+    if joined_count > 10_000 {
         println!("\n(Wowza that's a lot of images!)");
     } else {
         println!();
     }
-    output::divider("Crawl complete.");
 
-    let slop = generate_slop(image_paths, image_count);
-    write_findings(&slop, generated_refs);
+    output::divider("Scan complete.");
+    scan_data.print_results();
 
-    if let Err(_) = generate_loc(extracted_files, generated_refs) {
-        output::warn("Loc.csv is not a valid CSV file! Skipping...");
+    let slop = generate_slop(&scan_data);
+    write_results(&slop, output);
+
+    if let Err(_) = generate_loc(extracted_files, output) {
+        output::warn("`Loc.csv` is not a valid CSV file! Skipping...");
     }
 
     Ok(())
 }
 
+fn register_item(data: &mut ScanData, parent_dir: &PathBuf, path: &PathBuf) {
+    let key = String::from(paths::path_buf_to_key_name(parent_dir));
 
-fn register_item(images: &mut HashMap<String, SlopValue>, key: &str, item: &str) {
-    let key = String::from(key);
-    let item = String::from(item);
-    if let Some(SlopValue::List(list)) = images.get(&key) {
-        let mut list = list.clone();
-        list.push(item);
-        images.insert(key, SlopValue::List(list));
-    } else {
-        images.insert(key, SlopValue::List(vec![item]));
+    match ImageData::open(path) {
+        Ok(i) => data.push_valid(&key, i),
+        Err(e) => {
+            data.push_invalid(&key, InvalidEntry::InvalidImage(path.clone()));
+            eprintln!("{e}\t{}", path.display());
+        },
     }
 }
 
-fn generate_slop(image_paths: HashMap<String, SlopValue>, image_count: u32) -> Slop {
+fn generate_slop(data: &ScanData) -> Slop {
     output::divider("Generating SLOP file...");
 
-    let mut slop = Slop::from_map(image_paths);
-    slop.insert_str("!count", &image_count.to_string());
+    let mut slop = Slop::new();
+    slop.insert_unchecked(VERSION_KEY.to_string(), IMAGE_REF_VERSION.to_string());
+    slop.insert_unchecked("!count".to_string(), data.joined_count().to_string());
+    //slop.insert(VERSION_KEY, IMAGE_REF_VERSION.to_string());
+    //slop.insert("!count", data.joined_count().to_string());
+
+    for (key, images) in data.image_data.iter() {
+        let images: Vec<String> = images.iter().map(|i| i.to_string()).collect();
+
+        slop
+            .insert(key.clone(), images)
+            .expect("expected parent dir path to be valid");
+        //slop.insert(
+        //    &key,
+        //    images
+        //        .iter()
+        //        .map(|i| i.to_string())
+        //        .collect::<Vec<String>>(),
+        //);
+    }
+
     slop
 }
 
-fn generate_loc(extracted_files: &PathBuf, output_dir: &PathBuf) -> Result<(), Box<dyn Error>> {
+fn generate_loc(extracted_files: &PathBuf, output: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let loc_path = paths::push(extracted_files, ALL_LOC_CSV_NAME);
 
-    let mut loc_path = extracted_files.clone();
-    loc_path.push("Loc.csv");
-
-    if loc_path.is_file() {
-        output::announce_path("Found", &loc_path);
-
-        let mut reader = Reader::from_path(loc_path)?;
-        let mut keys: Vec<String> = vec![];
-        let mut key_count: u32 = 0;
-        println!("Copying translation keys...");
-
-        for record in reader.records() {
-            let record = record?;
-            if let Some(field) = record.get(0) {
-                keys.push(field.to_owned());
-                key_count += 1;
-                if key_count % 100 == 0 {
-                    output::update_progress("entries", key_count)?;
-                }
-            }
-        }
-        output::update_progress("entries", key_count)?;
-        io::stdout().flush()?;
-        println!();
-
-        output::divider("Writing keys to disk...");
-        fs::write(input::child_path(output_dir, LOC_KEYS_FILE_NAME), keys.join("\n"))
-            .expect("Expected to be able to write to disk");
+    if !loc_path.is_file() {
+        return Ok(());
     }
+
+    output::announce_path("Found", &loc_path);
+
+    let mut reader = Reader::from_path(loc_path)?;
+    let mut keys = vec![];
+    let mut key_count = 0u32;
+    let mut stdout = io::stdout().lock();
+    println!("Copying translation keys...");
+
+    for record in reader.records() {
+        let record = record?;
+
+        if let Some(field) = record.get(0) {
+            keys.push(field.to_owned());
+            key_count += 1;
+            output::update_progress(&mut stdout, "entries", key_count)?;
+        }
+    }
+
+    output::update_progress(&mut stdout, "entries", key_count)?;
+    println!();
+
+    output::divider("Writing keys to disk...");
+    fs::write(paths::push(output, LOC_REF_NAME), keys.join("\n"))
+        .expect("expected to be able to write to disk");
 
     Ok(())
 }
 
-fn write_findings(slop: &Slop, output_dir: &PathBuf) {
-    output::divider("Writing findings to disk...");
+fn write_results(slop: &Slop, output: &PathBuf) {
+    output::divider("Writing SLOP file to disk...");
 
-    let mut file_path = output_dir.clone();
-    file_path.push(Path::new(IMAGES_SLOP_FILE_NAME));
-    fs::write(file_path, slop.serialize())
-        .expect("Expected to be able to write to disk");
+    slop
+        .save(paths::push(output, IMAGE_REF_NAME))
+        .expect("expected to be able to write slop to disk");
+    //let path = paths::push(output, IMAGE_REF_NAME);
+    //fs::write(path, slop.serialize())
+    //    .expect("expected to be able to write slop to disk");
 }
