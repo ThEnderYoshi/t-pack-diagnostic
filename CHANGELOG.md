@@ -5,7 +5,7 @@ In this case, a "breaking change" is one that alters what commands are passed to
 the CLI - as well as how preexisting ones behave - in a way that breaks
 previous user inputs.
 
-## Version 2.0.0 - *Upcoming*
+## Version 2.0.0 - 2024-01-25
 
 This version includes a total rewrite of the codebase and improvements to
 all commands.
