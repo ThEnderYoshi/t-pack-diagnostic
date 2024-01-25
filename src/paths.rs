@@ -18,19 +18,19 @@ pub fn file_name(path: &PathBuf) -> &str {
         .expect(EXPECT_UTF8_PATH)
 }
 
-/// Returns the file extension at the end of the path.
-/// 
-/// ## Panics
-/// 
-/// Panics if the path does not have an extension.
-#[inline]
-pub fn extension(path: &PathBuf) -> &str {
-    path
-        .extension()
-        .expect("expected path to have a file extension")
-        .to_str()
-        .expect(EXPECT_UTF8_PATH)
-}
+///// Returns the file extension at the end of the path.
+///// 
+///// ## Panics
+///// 
+///// Panics if the path does not have an extension.
+//#[inline]
+//pub fn extension(path: &PathBuf) -> &str {
+//    path
+//        .extension()
+//        .expect("expected path to have a file extension")
+//        .to_str()
+//        .expect(EXPECT_UTF8_PATH)
+//}
 
 /// Returns the child `suffix` of the path `base`.
 #[inline]

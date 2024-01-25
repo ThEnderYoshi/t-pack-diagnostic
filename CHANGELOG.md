@@ -5,6 +5,18 @@ In this case, a "breaking change" is one that alters what commands are passed to
 the CLI - as well as how preexisting ones behave - in a way that breaks
 previous user inputs.
 
+## Version 3.0.0 - *Upcoming*
+
+### Breaking Changes
+
+- The command arguments now internally use `clap::Subcommand`.
+  - Previously `--input`, `--output` and `--reference` could always be used and
+    were all optional. (defaulting to `.`) This meant, for example, that `gen`
+    would accept - and ignore - the `--reference` argument.
+
+    Now, you can only pass arguments which are actually used by the action. So
+    the previous example will now break.
+
 ## Version 2.0.0 - 2024-01-25
 
 This version includes a total rewrite of the codebase and improvements to
